@@ -4,13 +4,19 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router";
 import { queryClient } from "@/lib/query-client";
 import { router } from "./router";
+import "@fontsource-variable/outfit";
 import "./index.css";
 
 async function enableMocking() {
   if (!import.meta.env.DEV || import.meta.env.VITE_API_MOCKING !== "enabled") return;
   const { worker } = await import("./mocks/browser");
   // Let requests we don't mock (Vite assets, fonts) pass through silently.
-  await worker.start({ onUnhandledRequest: "bypass" });
+  try {
+    await worker.start({ onUnhandledRequest: "bypass" });
+  } catch (err) {
+    // Some embedded browsers block service workers. Render anyway; API calls will fail.
+    console.warn("[mocks] Could not start MSW. The fake backend is off.", err);
+  }
 }
 
 enableMocking().then(() => {
