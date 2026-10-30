@@ -110,3 +110,33 @@ export function requestDownload(token: string, accessToken: string) {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }
+
+/** GET the encrypted blob from the presigned R2 URL, reporting progress. */
+export async function downloadFromStorage(
+  url: string,
+  onProgress: (loaded: number, total: number) => void,
+  expectedSize = 0,
+): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    throw new ApiRequestError("NETWORK_ERROR", 0, "Could not reach storage");
+  }
+  if (!res.ok) throw new ApiRequestError("STORAGE_ERROR", res.status, "Download from storage failed");
+
+  const total = Number(res.headers.get("content-length")) || expectedSize;
+  if (!res.body) return res.blob();
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value as Uint8Array<ArrayBuffer>);
+    loaded += value.length;
+    onProgress(loaded, total);
+  }
+  return new Blob(chunks, { type: "application/octet-stream" });
+}

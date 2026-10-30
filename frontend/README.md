@@ -15,9 +15,16 @@ npm run dev                  # http://localhost:5173
 With `VITE_API_MOCKING=enabled`, MSW fakes the whole backend in the browser
 (`src/mocks/`). Set it to `disabled` to hit the real backend via the Vite proxy.
 
+If the browser blocks service workers, the mocks fall back to patching fetch/XHR
+in the page (`src/mocks/fallback.ts`), so everything still works.
+
 ### Test error screens with mocks
-`/vault/demo-notfound`, `/vault/demo-expired`, `/vault/demo-exhausted`,
-`/vault/demo-lockedout`, `/vault/demo-ratelimit`
+Open these with a dummy key after `#` (any 43 characters), e.g.
+`/vault/demo-expired#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`
+
+`demo-notfound`, `demo-expired`, `demo-exhausted`, `demo-lockedout`, `demo-ratelimit` (on unlock)
+
+Without anything after `#` you get the "link is incomplete" screen.
 
 ## Add shadcn components
 

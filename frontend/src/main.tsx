@@ -14,8 +14,10 @@ async function enableMocking() {
   try {
     await worker.start({ onUnhandledRequest: "bypass" });
   } catch (err) {
-    // Some embedded browsers block service workers. Render anyway; API calls will fail.
-    console.warn("[mocks] Could not start MSW. The fake backend is off.", err);
+    // Some embedded browsers block service workers — fall back to patching fetch/XHR in the page.
+    console.warn("[mocks] Service worker unavailable, using in-page mocks instead.", err);
+    const { startInPageMocks } = await import("./mocks/fallback");
+    startInPageMocks();
   }
 }
 

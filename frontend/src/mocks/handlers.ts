@@ -3,7 +3,8 @@
  *
  * Real flow: create an upload on "/", open the share link in another tab.
  *
- * Fixed tokens for testing error screens (open /vault/<token>):
+ * Fixed tokens for testing error screens. Add any 43-character key after #, e.g.
+ *   /vault/demo-expired#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
  *   demo-notfound   → NOT_FOUND
  *   demo-expired    → EXPIRED
  *   demo-exhausted  → EXHAUSTED
