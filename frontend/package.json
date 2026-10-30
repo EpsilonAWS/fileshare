@@ -1,0 +1,44 @@
+{
+  "name": "fileshare-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.80.0",
+    "axios": "^1.10.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.525.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router": "^7.6.0",
+    "tailwind-merge": "^3.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "msw": "^2.10.0",
+    "tailwindcss": "^4.1.0",
+    "tw-animate-css": "^1.3.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.0"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  },
+  "allowScripts": {
+    "msw@2.15.0": true,
+    "esbuild@0.28.2": true
+  }
+}

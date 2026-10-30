@@ -1,0 +1,24 @@
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { RouterProvider } from "react-router";
+import { queryClient } from "@/lib/query-client";
+import { router } from "./router";
+import "./index.css";
+
+async function enableMocking() {
+  if (!import.meta.env.DEV || import.meta.env.VITE_API_MOCKING !== "enabled") return;
+  const { worker } = await import("./mocks/browser");
+  // Let requests we don't mock (Vite assets, fonts) pass through silently.
+  await worker.start({ onUnhandledRequest: "bypass" });
+}
+
+enableMocking().then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+});
