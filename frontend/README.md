@@ -1,4 +1,4 @@
-# FileShare — frontend
+# Ephemera — frontend
 
 React 19 + Vite + TypeScript + Tailwind v4 + shadcn/ui + TanStack Query + React Router.
 The API contract lives in `../shared/types.ts` (imported as `@shared/types`).
