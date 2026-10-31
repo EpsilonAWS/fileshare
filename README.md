@@ -1,8 +1,12 @@
-# fileshare
+# Ephemera
+
+**Share files that vanish.**
 
 > A zero-trust, temporary file transfer system (similar to Firefox Send or SendSafely).
 > Files are end-to-end encrypted in the browser and self-destruct after a time limit
 > or a number of downloads.
+
+The repository is named `fileshare`; the app is called **Ephemera**.
 
 ## Structure
 
