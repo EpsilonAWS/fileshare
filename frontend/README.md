@@ -1,48 +1,97 @@
 # Ephemera — frontend
 
-React 19 + Vite + TypeScript + Tailwind v4 + shadcn/ui + TanStack Query + React Router.
-The API contract lives in `../shared/types.ts` (imported as `@shared/types`).
+React 19 + Vite + TypeScript + Tailwind CSS v4, with TanStack Query and React Router.
+All encryption happens here, in the browser, using the Web Crypto API.
+The API contract is [`../shared/types.ts`](../shared/types.ts), imported as `@shared/types`.
 
 ## Run
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local   # Windows: copy .env.example .env.local
-npm run dev                  # http://localhost:5173
+copy .env.example .env.local   # macOS/Linux: cp .env.example .env.local
+npm run dev                    # http://localhost:5173
 ```
 
-With `VITE_API_MOCKING=enabled`, MSW fakes the whole backend in the browser
-(`src/mocks/`). Set it to `disabled` to hit the real backend via the Vite proxy.
+| Script | What it does |
+|---|---|
+| `npm run dev` | Dev server with hot reload |
+| `npm run build` | Type-check and build to `dist/` |
+| `npm run typecheck` | Type-check only |
+| `npm run preview` | Serve the production build locally |
 
-If the browser blocks service workers, the mocks fall back to patching fetch/XHR
-in the page (`src/mocks/fallback.ts`), so everything still works.
+### Environment (`.env.local`)
 
-### Test error screens with mocks
-Open these with a dummy key after `#` (any 43 characters), e.g.
-`/vault/demo-expired#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`
+| Variable | Meaning |
+|---|---|
+| `VITE_API_MOCKING` | `enabled` = fake the whole API in the browser with MSW. `disabled` = use the real backend |
+| `VITE_API_PROXY_TARGET` | Where Vite forwards `/api/*` in dev (default `http://localhost:4000`) |
 
-`demo-notfound`, `demo-expired`, `demo-exhausted`, `demo-lockedout`, `demo-ratelimit` (on unlock)
+For local development against the real backend, also put `BASE_URL=http://localhost:5173`
+in `backend/.env`, so the backend's storage links go through Vite and everything stays on
+one address.
 
-Without anything after `#` you get the "link is incomplete" screen.
+## Working without the backend (mocks)
 
-## Add shadcn components
+With `VITE_API_MOCKING=enabled`, `src/mocks/` answers every API call exactly as described
+in `shared/types.ts`. Uploads are kept in the browser (localStorage + IndexedDB), so a link
+made in one tab opens in another. If a browser blocks service workers, the mocks fall back
+to patching `fetch`/XHR in the page (`src/mocks/fallback.ts`).
 
-```bash
-npx shadcn@latest add button input card progress radio-group sonner
+**Test the error screens** — open these with any 43 characters after `#`:
+
 ```
+/vault/demo-expired#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+```
+
+`demo-notfound`, `demo-expired`, `demo-exhausted`, `demo-lockedout`, `demo-ratelimit` (on unlock).
+With nothing after `#` you get the "link is incomplete" screen.
 
 ## Structure
 
 ```
 src/
-  lib/api-client.ts   all backend calls (only place that talks to the API)
-  lib/crypto.ts       TODO: E2E encryption (see header of shared/types.ts)
-  mocks/              MSW fake backend
-  routes/             UploadPage, VaultPage, NotFoundPage
-  components/ui/      shadcn components (generated)
+├── main.tsx                  App entry; starts the mocks when enabled
+├── router.tsx                /  ·  /vault/:shareToken  ·  404
+├── index.css                 Theme tokens, glass cards, animations
+├── routes/
+│   ├── RootLayout.tsx        Header, particle background, cursor trail
+│   ├── UploadPage.tsx        Hero, upload card, "How it works"
+│   ├── VaultPage.tsx         Receiver flow (status → passkey → unlock → download)
+│   └── NotFoundPage.tsx
+├── components/
+│   ├── upload/               DropZone, Segmented, PasskeyField, WorkingView, ShareResult, UploadCard
+│   ├── vault/                PasskeyGate, FileReady, Countdown, VaultMessage
+│   ├── ParticleBackground.tsx, CursorTrail.tsx, GlassCard.tsx, Reveal.tsx, Logo.tsx
+├── lib/
+│   ├── api-client.ts         The only place that talks to the API
+│   ├── crypto.ts             End-to-end encryption (see below)
+│   ├── bundle.ts             Zips several files in the browser (fflate)
+│   ├── particle-field.ts     Canvas particle engine + `field` controller
+│   ├── errors.ts             Error code → human message
+│   ├── save-file.ts          Saves the decrypted file (sanitises the name)
+│   └── use-spotlight.ts, query-client.ts, utils.ts
+└── mocks/                    MSW handlers, in-browser storage, fallback
 ```
 
+## Encryption (`src/lib/crypto.ts`)
+
+- `prepareUpload(file, meta, passkey?)` — creates the link secret, derives the keys, encrypts
+  the file and its metadata, and returns everything `createUpload` needs.
+- `deriveKeys(linkSecret, { passkey, kdf }?)` — PBKDF2-SHA256 (600,000 iterations) for the
+  passkey, then HKDF-SHA256 → AES-256-GCM file key + `authToken`.
+- `decryptMeta` / `decryptFile` — receiver side; throw `DecryptionError` on a wrong key or tampering.
+- `buildShareLink` / `takeLinkSecretFromHash` — the key lives only in the `#fragment` and is
+  removed from the address bar as soon as it's read.
+
+## Motion
+
+`lib/particle-field.ts` exposes a `field` object the UI uses to steer the background:
+`field.set("attract" | "swirl" | "idle", point)`, `field.burst(point)` and `field.intensity`.
+Everything respects `prefers-reduced-motion`, pauses in hidden tabs, and the pointer effects
+only run with a mouse or pen.
+
 ## Deploy (Vercel)
-New Vercel project → Root Directory `frontend`. Edit `vercel.json` to point
-`/api/*` at the backend project's URL.
+
+New Vercel project → Root Directory `frontend`. In `vercel.json`, replace
+`REPLACE-WITH-BACKEND-PROJECT` with the backend project's domain so `/api/*` is forwarded to it.
