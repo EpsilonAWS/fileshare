@@ -47,10 +47,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as ApiError | null;
     throw new ApiRequestError(
-      body?.error.code ?? "INTERNAL",
+      body?.error?.code ?? (res.status === 422 ? "VALIDATION_ERROR" : "INTERNAL"),
       res.status,
-      body?.error.message ?? res.statusText,
-      body?.error.details,
+      body?.error?.message ?? res.statusText,
+      body?.error?.details,
     );
   }
   return (await res.json()) as T;
