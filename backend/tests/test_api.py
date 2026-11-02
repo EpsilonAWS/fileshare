@@ -255,5 +255,5 @@ async def test_edge_cases_and_error_codes():
             "/api/cron/sweep",
             headers={"Authorization": "Bearer wrong-secret"},
         )
-        assert bad_cron.status_code == 400
-        assert bad_cron.json()["error"]["code"] == "VALIDATION_ERROR"
+        assert bad_cron.status_code == 401
+        assert bad_cron.json()["error"]["code"] == "ACCESS_TOKEN_INVALID"

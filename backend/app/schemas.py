@@ -20,21 +20,23 @@ ACCESS_TOKEN_TTL_SECONDS = 5 * 60
 
 class KdfParams(BaseModel):
     algorithm: Literal["PBKDF2-SHA256"] = "PBKDF2-SHA256"
-    iterations: int
-    salt: str
+    # Bounded so a sender can't make receivers' browsers grind forever.
+    iterations: int = Field(ge=100_000, le=5_000_000)
+    salt: str = Field(min_length=8, max_length=64)
 
 
 class PasskeyProtection(BaseModel):
-    authToken: str
+    authToken: str = Field(min_length=16, max_length=128)
     kdf: KdfParams
 
 
 class CreateUploadRequest(BaseModel):
-    sizeBytes: int
+    sizeBytes: int = Field(gt=0)
     expiry: ExpiryOption
     maxDownloads: DownloadLimit
     passkeyProtection: Optional[PasskeyProtection] = None
-    encryptedMeta: str
+    # Contract says max 4 KB of metadata; base64 of that plus IV/tag fits in 8 KB.
+    encryptedMeta: str = Field(min_length=1, max_length=8192)
 
 
 class CreateUploadResponse(BaseModel):
@@ -59,7 +61,7 @@ class VaultStatusResponse(BaseModel):
 
 
 class UnlockRequest(BaseModel):
-    authToken: Optional[str] = None
+    authToken: Optional[str] = Field(default=None, max_length=128)
 
 
 class VaultMetadata(BaseModel):

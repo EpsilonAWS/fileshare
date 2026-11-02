@@ -18,7 +18,15 @@ Thumbs.db
 *.sw?
 
 # Python
+__pycache__/
 *.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Local backend data (dev SQLite DB + local file storage)
+*.db
+backend/storage/
 
 # Node (applies to frontend/ and backend/)
 node_modules/
