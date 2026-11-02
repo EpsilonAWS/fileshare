@@ -17,6 +17,9 @@ Thumbs.db
 *.sln
 *.sw?
 
+# Python
+*.pyc
+
 # Node (applies to frontend/ and backend/)
 node_modules/
 npm-debug.log*
