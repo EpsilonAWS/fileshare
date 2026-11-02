@@ -45,11 +45,28 @@ This boots both PostgreSQL and the containerized FastAPI backend on port 4000.
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | PostgreSQL or SQLite connection string | `sqlite+aiosqlite:///ephemera.db` |
-| `AWS_ACCESS_KEY_ID` | AWS Access Key ID for S3 | `""` (uses local storage fallback) |
-| `AWS_SECRET_ACCESS_KEY` | AWS Secret Access Key for S3 | `""` |
-| `AWS_REGION` | AWS S3 Region | `us-east-1` |
-| `AWS_S3_BUCKET_NAME` | AWS S3 Bucket Name | `""` |
-| `SECRET_KEY` | HMAC signing key for download access tokens | Dev secret |
-| `CRON_SECRET` | Bearer token required for `/api/cron/sweep` | `ephemera-cron-secret` |
+| `DATABASE_URL` | PostgreSQL or SQLite connection string. For Supabase use the **pooler** URL (port 6543) | `sqlite+aiosqlite:///ephemera.db` |
+| `S3_ENDPOINT_URL` | S3-compatible endpoint. For Cloudflare R2: `https://<account-id>.r2.cloudflarestorage.com` | `""` (AWS S3) |
+| `AWS_ACCESS_KEY_ID` | Access key (AWS, or an R2 API token's key) | `""` (uses local storage fallback) |
+| `AWS_SECRET_ACCESS_KEY` | Secret key | `""` |
+| `AWS_REGION` | Region | `auto` with an endpoint, else `us-east-1` |
+| `AWS_S3_BUCKET_NAME` | Bucket name | `""` |
+| `SECRET_KEY` | HMAC signing key for access tokens and local storage URLs. **Required on Vercel** | Dev secret |
+| `CRON_SECRET` | Bearer token for `/api/cron/sweep` (Vercel Cron sends it automatically) | `ephemera-cron-secret` |
+| `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API | `http://localhost:5173,http://127.0.0.1:5173` |
+| `STORAGE_GRACE_SECONDS` | How long an expired/exhausted object is kept so an in-flight download can finish | `90` |
 | `BASE_URL` | Base URL used for local storage links | `http://localhost:4000` |
+
+### Cloudflare R2 bucket setup
+
+1. **CORS** (bucket → Settings → CORS policy) — allow `PUT` and `GET` with header `Content-Type`
+   from `http://localhost:5173` and the frontend's Vercel domain.
+2. **Lifecycle rule** — delete objects older than 2 days, as a safety net if the sweeper misses something.
+
+### Notes
+
+- Expired or exhausted vaults are refused immediately, but their storage object is kept for
+  `STORAGE_GRACE_SECONDS` so a download URL issued just before can still finish. The sweeper
+  (every 60 s in Docker, daily via Vercel Cron) then removes it.
+- Vercel's Hobby plan only allows daily cron jobs, so `vercel.json` runs the sweep once a day.
+  Expiry is still enforced on every request; the R2 lifecycle rule is the backstop.

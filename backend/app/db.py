@@ -1,12 +1,27 @@
 import asyncio
 import logging
+from uuid import uuid4
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
-from app.config import DATABASE_URL
+from sqlalchemy.pool import NullPool
+from app.config import DATABASE_URL, ON_VERCEL
 
 logger = logging.getLogger("ephemera.db")
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine_kwargs: dict = {"echo": False}
+if DATABASE_URL.startswith("postgresql+asyncpg"):
+    # Supabase's connection pooler (PgBouncer, transaction mode) doesn't support
+    # asyncpg's cached prepared statements, so disable the caches and use unique names.
+    engine_kwargs["connect_args"] = {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+        "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4()}__",
+    }
+if ON_VERCEL:
+    # Serverless functions are short-lived: let the pooler do the pooling.
+    engine_kwargs["poolclass"] = NullPool
+
+engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 

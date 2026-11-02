@@ -30,3 +30,5 @@ class Vault(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
+    # When the last download URL was issued; storage is purged after a short grace period.
+    exhausted_at = Column(DateTime(timezone=True), nullable=True)

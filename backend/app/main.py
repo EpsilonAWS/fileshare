@@ -6,13 +6,18 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, Request, Header, HTTPException, status
+import hmac
+
+from fastapi import FastAPI, Depends, Request, Header, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update, case
 
-from app.config import STORAGE_MODE, LOCAL_STORAGE_DIR, CRON_SECRET
+from app.config import STORAGE_MODE, CRON_SECRET, CORS_ORIGINS, ON_VERCEL, STORAGE_GRACE_SECONDS
 from app.db import init_db, get_db
 from app.models import Vault
 from app.schemas import (
@@ -38,6 +43,8 @@ from app.storage import (
     generate_presigned_get,
     verify_object_exists,
     delete_object,
+    local_path,
+    verify_local_signature,
 )
 from app.sweeper import sweep_expired_vaults, run_periodic_sweeper
 
@@ -90,25 +97,57 @@ def b64url_random(bytes_count: int = 16) -> str:
 async def lifespan(app: FastAPI):
     # Initialize DB schema
     await init_db()
-    # In continuous server/container mode, launch the background sweeper
-    sweeper_task = asyncio.create_task(run_periodic_sweeper(interval_seconds=60))
+    # In continuous server/container mode, launch the background sweeper.
+    # On Vercel there is no long-running process — Vercel Cron calls /api/cron/sweep instead.
+    sweeper_task = None if ON_VERCEL else asyncio.create_task(run_periodic_sweeper(interval_seconds=60))
     yield
-    sweeper_task.cancel()
-    try:
-        await sweeper_task
-    except asyncio.CancelledError:
-        pass
+    if sweeper_task:
+        sweeper_task.cancel()
+        try:
+            await sweeper_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Ephemera Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,  # no cookies are used; tokens travel in headers
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# Every error leaves the API in the shared/types.ts ApiError shape: { error: { code, message, details? } }
+@app.exception_handler(RequestValidationError)
+async def on_validation_error(request: Request, exc: RequestValidationError):
+    fields = {
+        ".".join(str(p) for p in err.get("loc", []) if p != "body") or "body": err.get("msg", "invalid")
+        for err in exc.errors()
+    }
+    return api_error("VALIDATION_ERROR", "Invalid request", details={"fields": fields})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def on_http_error(request: Request, exc: StarletteHTTPException):
+    code = "NOT_FOUND" if exc.status_code == 404 else ("INTERNAL" if exc.status_code >= 500 else "VALIDATION_ERROR")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": code, "message": str(exc.detail)}},
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(Exception)
+async def on_unexpected_error(request: Request, exc: Exception):
+    return api_error("INTERNAL", "Something went wrong")
+
+
+def past_grace(ts: Optional[datetime], now: datetime) -> bool:
+    """True once a deadline is far enough behind us that in-flight downloads have finished."""
+    return ts is not None and ts <= now - timedelta(seconds=STORAGE_GRACE_SECONDS)
 
 
 # ─── 1. Create upload ────────────────────────────────────────────────────────
@@ -217,13 +256,15 @@ async def get_and_check_vault(token: str, db: AsyncSession):
     now = utc_now()
     expires_at = ensure_utc(vault.expires_at)
     if expires_at and expires_at <= now:
-        # Immediate file purge from storage
-        delete_object(vault.storage_key)
+        # Access is refused immediately; the object itself is purged once any
+        # download URL issued just before expiry has had time to finish.
+        if past_grace(expires_at, now):
+            delete_object(vault.storage_key)
         return None, api_error("EXPIRED", "This file has expired")
 
     if vault.downloads_remaining <= 0:
-        # Immediate file purge from storage
-        delete_object(vault.storage_key)
+        if past_grace(ensure_utc(vault.exhausted_at), now) or vault.exhausted_at is None:
+            delete_object(vault.storage_key)
         return None, api_error("EXHAUSTED", "No downloads remaining")
 
     if vault.failed_attempts >= MAX_PASSKEY_ATTEMPTS:
@@ -264,10 +305,35 @@ async def unlock_vault(token: str, req: UnlockRequest, db: AsyncSession = Depend
     if vault.auth_token_hash:
         if not req.authToken:
             return api_error("PASSKEY_REQUIRED", "Passkey required")
-        if not verify_auth_token(vault.auth_token_hash, req.authToken):
-            vault.failed_attempts += 1
+
+        # Reserve an attempt atomically BEFORE the (slow) Argon2 check, so parallel
+        # guesses can't all slip in while the counter still reads 0.
+        reserved = await db.execute(
+            update(Vault)
+            .where(Vault.share_token == token, Vault.failed_attempts < MAX_PASSKEY_ATTEMPTS)
+            .values(failed_attempts=Vault.failed_attempts + 1)
+            .returning(Vault.failed_attempts)
+            .execution_options(synchronize_session=False)
+        )
+        row = reserved.first()
+        await db.commit()
+        if row is None:
+            return api_error("LOCKED_OUT", "Too many wrong attempts", details={"retryAfterSeconds": 0})
+        attempts_used = row[0]
+
+        # Argon2 is CPU-bound: keep it off the event loop.
+        ok = await run_in_threadpool(verify_auth_token, vault.auth_token_hash, req.authToken)
+        if ok:
+            # Correct passkey: give the reserved attempt back.
+            await db.execute(
+                update(Vault)
+                .where(Vault.share_token == token)
+                .values(failed_attempts=Vault.failed_attempts - 1)
+                .execution_options(synchronize_session=False)
+            )
             await db.commit()
-            left = MAX_PASSKEY_ATTEMPTS - vault.failed_attempts
+        else:
+            left = MAX_PASSKEY_ATTEMPTS - attempts_used
             if left <= 0:
                 return api_error("LOCKED_OUT", "Too many wrong attempts", details={"retryAfterSeconds": 0})
             return api_error("WRONG_PASSKEY", "Wrong passkey", details={"attemptsRemaining": left})
@@ -305,53 +371,89 @@ async def download_vault(
     if not verify_access_token(bearer, token):
         return api_error("ACCESS_TOKEN_INVALID", "Unlock again")
 
-    vault, err = await get_and_check_vault(token, db)
-    if err:
-        return err
-
-    # Atomically decrement remaining downloads
-    vault.downloads_remaining -= 1
+    # One conditional UPDATE: only succeeds while the vault is live and has downloads
+    # left, so parallel requests can never take more downloads than allowed.
+    now = utc_now()
+    result = await db.execute(
+        update(Vault)
+        .where(
+            Vault.share_token == token,
+            Vault.completed_at.is_not(None),
+            Vault.expires_at > now,
+            Vault.downloads_remaining > 0,
+            Vault.failed_attempts < MAX_PASSKEY_ATTEMPTS,
+        )
+        .values(
+            downloads_remaining=Vault.downloads_remaining - 1,
+            # Remember when the last download URL went out; the sweeper purges the
+            # object after a grace period instead of deleting it under the downloader.
+            exhausted_at=case((Vault.downloads_remaining <= 1, now), else_=Vault.exhausted_at),
+        )
+        .returning(Vault.downloads_remaining, Vault.storage_key)
+        .execution_options(synchronize_session=False)
+    )
+    row = result.first()
     await db.commit()
 
-    download_url = generate_presigned_get(vault.storage_key, expires_in=DOWNLOAD_URL_TTL_SECONDS)
-    download_url_expires_at = (utc_now() + timedelta(seconds=DOWNLOAD_URL_TTL_SECONDS)).isoformat()
+    if row is None:
+        _, err = await get_and_check_vault(token, db)
+        return err or api_error("EXHAUSTED", "No downloads remaining")
 
-    # If count reached 0, purge the file object immediately
-    if vault.downloads_remaining <= 0:
-        delete_object(vault.storage_key)
+    remaining, storage_key = row
+    download_url = generate_presigned_get(storage_key, expires_in=DOWNLOAD_URL_TTL_SECONDS)
+    download_url_expires_at = (now + timedelta(seconds=DOWNLOAD_URL_TTL_SECONDS)).isoformat()
 
     return DownloadResponse(
         downloadUrl=download_url,
         downloadUrlExpiresAt=download_url_expires_at,
-        downloadsRemaining=vault.downloads_remaining,
+        downloadsRemaining=remaining,
     )
 
 
 # ─── 6. Background Sweeper / Vercel Cron Trigger ─────────────────────────────
-@app.post("/api/cron/sweep")
+# Vercel Cron sends GET with "Authorization: Bearer $CRON_SECRET"; POST kept for manual runs.
+@app.api_route("/api/cron/sweep", methods=["GET", "POST"])
 async def trigger_sweeper(authorization: Optional[str] = Header(None)):
     if CRON_SECRET:
         token = authorization[len("Bearer ") :] if authorization and authorization.startswith("Bearer ") else ""
-        if token != CRON_SECRET:
-            return api_error("VALIDATION_ERROR", "Unauthorized cron invocation")
+        if not hmac.compare_digest(token.encode(), CRON_SECRET.encode()):
+            return JSONResponse(
+                status_code=401,
+                content={"error": {"code": "ACCESS_TOKEN_INVALID", "message": "Unauthorized cron invocation"}},
+            )
 
     deleted = await sweep_expired_vaults()
     return {"status": "ok", "deleted": deleted, "serverTime": iso_now()}
 
 
 # ─── Local Storage Fallback Handlers ─────────────────────────────────────────
+# Dev only. URLs are HMAC-signed and expire, like presigned S3 URLs, so a download
+# link can't be turned into an upload link and keys can't escape the storage folder.
 if STORAGE_MODE == "local":
     @app.put("/api/storage/{storage_key:path}")
-    async def local_storage_put(storage_key: str, request: Request):
-        target = LOCAL_STORAGE_DIR / storage_key
+    async def local_storage_put(
+        storage_key: str, request: Request, exp: Optional[str] = None, sig: Optional[str] = None
+    ):
+        target = local_path(storage_key)
+        if target is None:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        if not verify_local_signature("put", storage_key, exp, sig):
+            return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_CIPHERTEXT_BYTES:
+                return Response(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         target.parent.mkdir(parents=True, exist_ok=True)
-        body = await request.body()
-        target.write_bytes(body)
+        target.write_bytes(bytes(body))
         return Response(status_code=status.HTTP_200_OK)
 
     @app.get("/api/storage/{storage_key:path}")
-    async def local_storage_get(storage_key: str):
-        target = LOCAL_STORAGE_DIR / storage_key
-        if not target.is_file():
+    async def local_storage_get(storage_key: str, exp: Optional[str] = None, sig: Optional[str] = None):
+        target = local_path(storage_key)
+        if target is None or not target.is_file():
             return Response(status_code=status.HTTP_404_NOT_FOUND)
+        if not verify_local_signature("get", storage_key, exp, sig):
+            return Response(status_code=status.HTTP_403_FORBIDDEN)
         return FileResponse(path=target, media_type="application/octet-stream")

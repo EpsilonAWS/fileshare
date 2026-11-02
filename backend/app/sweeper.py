@@ -1,31 +1,44 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
-from sqlalchemy import select, or_
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import select, or_, and_
+from app.config import STORAGE_GRACE_SECONDS
 from app.db import AsyncSessionLocal
 from app.models import Vault
+from app.schemas import UPLOAD_URL_TTL_SECONDS
 from app.storage import delete_object
 
 logger = logging.getLogger("ephemera.sweeper")
 
 
 async def sweep_expired_vaults() -> int:
-    """Find expired or download-exhausted vaults, delete storage objects, and purge records."""
+    """
+    Delete storage objects and records for vaults that are:
+      - expired (past expires_at + grace),
+      - exhausted (last download URL issued more than `grace` ago), or
+      - abandoned (upload never completed and its PUT URL has long expired).
+    The grace period lets a download URL issued just before expiry/exhaustion finish.
+    """
     now = datetime.now(timezone.utc)
+    grace_cutoff = now - timedelta(seconds=STORAGE_GRACE_SECONDS)
+    abandoned_cutoff = now - timedelta(seconds=UPLOAD_URL_TTL_SECONDS + STORAGE_GRACE_SECONDS)
     deleted_count = 0
 
     async with AsyncSessionLocal() as session:
         stmt = select(Vault).where(
-            Vault.completed_at.is_not(None),
             or_(
-                Vault.expires_at <= now,
-                Vault.downloads_remaining <= 0,
-            ),
+                and_(Vault.completed_at.is_not(None), Vault.expires_at <= grace_cutoff),
+                and_(
+                    Vault.downloads_remaining <= 0,
+                    or_(Vault.exhausted_at.is_(None), Vault.exhausted_at <= grace_cutoff),
+                ),
+                and_(Vault.completed_at.is_(None), Vault.created_at <= abandoned_cutoff),
+            )
         )
         result = await session.execute(stmt)
-        expired_vaults = result.scalars().all()
+        stale_vaults = result.scalars().all()
 
-        for vault in expired_vaults:
+        for vault in stale_vaults:
             try:
                 delete_object(vault.storage_key)
             except Exception as e:
@@ -36,7 +49,7 @@ async def sweep_expired_vaults() -> int:
 
         if deleted_count > 0:
             await session.commit()
-            logger.info(f"Sweeper purged {deleted_count} expired/exhausted files.")
+            logger.info(f"Sweeper purged {deleted_count} expired/exhausted/abandoned vaults.")
 
     return deleted_count
 
