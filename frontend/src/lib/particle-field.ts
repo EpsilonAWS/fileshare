@@ -279,7 +279,7 @@ export function startParticleField(canvas: HTMLCanvasElement, reducedMotion: boo
       }
 
       const lifeAlpha = Math.sin((Math.PI * p.age) / p.life) * field.intensity;
-      const bucket = Math.min(ALPHA_BUCKETS - 1, Math.floor(lifeAlpha * ALPHA_BUCKETS));
+      const bucket = Math.max(0, Math.min(ALPHA_BUCKETS - 1, Math.floor(lifeAlpha * ALPHA_BUCKETS)));
       const path = paths[p.color * ALPHA_BUCKETS + bucket];
       path.moveTo(p.px, p.py);
       path.lineTo(p.x, p.y);
@@ -300,10 +300,17 @@ export function startParticleField(canvas: HTMLCanvasElement, reducedMotion: boo
   }
 
   function loop(now: number) {
-    const dt = Math.min(3, (now - last) / 16.67);
-    last = now;
-    step(now, dt);
+    // After a tab comes back, rAF can hand us a timestamp slightly *before* `last`,
+    // so clamp the step to [0, 3] frames.
+    const dt = Math.max(0, Math.min(3, (now - last) / 16.67));
+    last = Math.max(last, now);
+    // Schedule the next frame first, so one bad frame can never stop the animation.
     raf = requestAnimationFrame(loop);
+    try {
+      step(now, dt);
+    } catch (err) {
+      console.error("[particles] frame failed", err);
+    }
   }
 
   function renderStill() {
@@ -319,6 +326,13 @@ export function startParticleField(canvas: HTMLCanvasElement, reducedMotion: boo
     }
   }
 
+  // Browsers may discard a background tab's canvas memory; when it comes back the
+  // canvas is blank and its transform is reset, so set everything up again.
+  function onContextRestored() {
+    resize();
+    if (reducedMotion) renderStill();
+  }
+
   function onResize() {
     resize();
     if (reducedMotion) renderStill();
@@ -326,6 +340,8 @@ export function startParticleField(canvas: HTMLCanvasElement, reducedMotion: boo
 
   resize();
   window.addEventListener("resize", onResize);
+  canvas.addEventListener("contextrestored", onContextRestored);
+  window.addEventListener("pageshow", onVisibility);
   if (reducedMotion) {
     renderStill();
   } else {
@@ -337,5 +353,7 @@ export function startParticleField(canvas: HTMLCanvasElement, reducedMotion: boo
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", onResize);
     document.removeEventListener("visibilitychange", onVisibility);
+    canvas.removeEventListener("contextrestored", onContextRestored);
+    window.removeEventListener("pageshow", onVisibility);
   };
 }
